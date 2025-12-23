@@ -70,6 +70,11 @@ app.whenReady().then(() => {
     return tracker.getStats()
   })
 
+  ipcMain.handle('reset-stats', () => {
+    tracker.resetStats()
+    return true
+  })
+
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.

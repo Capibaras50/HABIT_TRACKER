@@ -6,6 +6,7 @@ const api = {
   startTracking: () => ipcRenderer.invoke('start-tracking'),
   stopTracking: () => ipcRenderer.invoke('stop-tracking'),
   getStats: () => ipcRenderer.invoke('get-activity-stats'),
+  resetStats: () => ipcRenderer.invoke('reset-stats'),
   onActivityUpdate: (callback) => ipcRenderer.on('activity-update', (_event, value) => callback(value)),
   removeActivityListener: () => ipcRenderer.removeAllListeners('activity-update')
 }

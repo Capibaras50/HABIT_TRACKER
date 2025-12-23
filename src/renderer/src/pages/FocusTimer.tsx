@@ -6,10 +6,11 @@ import { Button } from '../components/Button'
 import { CancellationModal } from '../components/CancellationModal'
 import { DifficultyModal } from '../components/DifficultyModal'
 import { api } from '../services/api'
+import { AllowedAppsModal } from '../components/AllowedAppsModal'
 
 // Testing: 1 min work, 1 min break. Production: 25 min work, 5 min break
-const WORK_DURATION = 25 * 60 // 25 minutes
-const BREAK_DURATION = 5 * 60 // 5 minutes
+const WORK_DURATION = 1 * 60 // 1 minute for testing
+const BREAK_DURATION = 1 * 60 // 1 minute for testing
 
 export default function FocusTimer(): React.JSX.Element {
     const location = useLocation()
@@ -39,6 +40,11 @@ export default function FocusTimer(): React.JSX.Element {
     // Activity tracking stats
     // Activity tracking stats
     const [usageStats, setUsageStats] = useState<any[]>([])
+
+    // Allowed Apps State
+    const [showAllowedAppsModal, setShowAllowedAppsModal] = useState(false)
+    const [allowedApps, setAllowedApps] = useState<string[]>([])
+    const [allowedDomains, setAllowedDomains] = useState<string[]>([])
 
     // Alarm state
     const [isAlarmActive, setIsAlarmActive] = useState(false)
@@ -99,10 +105,26 @@ export default function FocusTimer(): React.JSX.Element {
     // Refs for tracking
     const workTimeRef = useRef(0)
 
-    // Activity tracking effect
+    // Reset stats on mount and show modal if needed
+    useEffect(() => {
+        if (deepWorkWithScreen) {
+            setShowAllowedAppsModal(true)
+        }
+        if (window.api && window.api.resetStats) {
+            window.api.resetStats().catch(err => console.error(err))
+        }
+    }, [deepWorkWithScreen])
+
+    const handleAllowedAppsConfirm = (apps: string[], domains: string[]) => {
+        setAllowedApps(apps)
+        setAllowedDomains(domains)
+        setShowAllowedAppsModal(false)
+    }
+
+    // Activity tracking effect - ONLY tracks when Active AND WorkMode
     useEffect(() => {
         if (isActive && isWorkMode && deepWorkWithScreen) {
-            window.api.startTracking()
+            window.api.startTracking().catch(console.error)
             const handleUpdate = (data: any) => {
                 const appName = data.app || 'Unknown'
                 setCurrentActivity(`${appName} - ${data.title}`)
@@ -110,11 +132,17 @@ export default function FocusTimer(): React.JSX.Element {
             window.api.onActivityUpdate(handleUpdate)
             return () => {
                 window.api.removeActivityListener()
+                // Do not stop tracking completely if we just pause, but here we want to pause tracking
                 window.api.stopTracking().then((stats: any) => {
-                    console.log('Session Stats collected:', stats)
+                    console.log('Partial Stats collected:', stats)
                     setUsageStats(stats)
-                })
+                }).catch(console.error)
             }
+        } else {
+            // Ensure tracking stops if not in work mode
+            window.api.stopTracking().then((stats: any) => {
+                setUsageStats(stats)
+            }).catch(console.error)
         }
         return undefined
     }, [isActive, isWorkMode, deepWorkWithScreen])
@@ -186,6 +214,29 @@ export default function FocusTimer(): React.JSX.Element {
         navigate(-1)
     }
 
+    const isDistraction = (appName: string, urls: string[] = []) => {
+        const lowerName = appName.toLowerCase()
+
+        // 1. Check Allowlist (User overrides)
+        if (allowedApps.length > 0) {
+            if (allowedApps.some(allowed => lowerName.includes(allowed))) return false
+        }
+
+        if (allowedDomains.length > 0 && urls.length > 0) {
+            if (urls.some(u => allowedDomains.some(d => u.includes(d)))) return false
+        }
+
+        const distractionApps = ['discord', 'spotify', 'slack', 'whatsapp', 'telegram', 'steam', 'netflix']
+        const distractionDomains = ['facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'youtube.com', 'netflix.com', 'reddit.com']
+
+        if (distractionApps.some(d => lowerName.includes(d))) return true
+
+        if (urls.length > 0) {
+            if (urls.some(u => distractionDomains.some(d => u.includes(d)))) return true
+        }
+        return false
+    }
+
     const handleDifficultyConfirm = async (difficulty: number) => {
         if (!habitId) {
             setShowDifficultyModal(false)
@@ -211,33 +262,27 @@ export default function FocusTimer(): React.JSX.Element {
         let totalDistractionTimeMinutes = 0
         let totalSwitches = 0
 
+        // Log all apps, but calculate distraction time based on heuristic
         if (finalStats.length === 0) {
-            // Fallback if no stats collected but Deep Work requires 'distractions' object
-            appsData['Session'] = { time: 1, switches: 0 }
-            totalDistractionTimeMinutes = 1.0
+            // No stats
         } else {
             finalStats.forEach((stat: any) => {
-                // const isBrowser = ... removed to allow any app with URLs to report them
-
-                // User requires PRECISE time for backend (float compatibility assumed or forced)
-                // Convert seconds to minutes with 2 decimal precision
-                // But wait, Number((stat.timeSpentSeconds / 60).toFixed(2)) might be better
-                const minutes = Number((stat.timeSpentSeconds / 60).toFixed(4)) // High precision for focus_score
+                // Convert seconds to minutes with 4 decimal precision
+                const minutes = Number((stat.timeSpentSeconds / 60).toFixed(4))
 
                 let domains: string[] = []
                 if (stat.urls && stat.urls.length > 0) {
-                    // Backend strict schema: urls must be valid DOMAINS (joi.string().domain())
-                    // We must extract hostname. 'https://google.com/foo' -> 'google.com'
                     const uniqueDomains = new Set<string>()
                     stat.urls.forEach(u => {
                         try {
-                            const hostname = new URL(u).hostname
-                            if (hostname) uniqueDomains.add(hostname)
-                        } catch (e) {
-                            // If it fails to parse as URL, check if it looks like a domain already
-                            if (u.includes('.') && !u.includes('://') && !u.includes(' ')) {
-                                uniqueDomains.add(u)
+                            // Basic heuristic to clean URL or get hostname
+                            let hostname = u
+                            if (u.includes('://')) {
+                                hostname = new URL(u).hostname
                             }
+                            uniqueDomains.add(hostname)
+                        } catch (e) {
+                            if (u.includes('.')) uniqueDomains.add(u)
                         }
                     })
                     if (uniqueDomains.size > 0) {
@@ -251,31 +296,45 @@ export default function FocusTimer(): React.JSX.Element {
                     ...(domains.length > 0 ? { urls: domains } : {})
                 }
 
-                totalDistractionTimeMinutes += minutes
+                if (isDistraction(stat.name, domains)) {
+                    totalDistractionTimeMinutes += minutes
+                }
                 totalSwitches += stat.switches
             })
         }
 
-        // Backend strict schema: totalDistractionTime must be INTEGER and min(1)
-        const finalTotalTime = Math.max(1, Math.round(totalDistractionTimeMinutes))
+        // Backend strict schema: totalDistractionTime must be positive number. 
+        // If 0, maybe set to small epsilon or just 0 if allowed? Schema says positive() min(0) or min(1)?
+        // Schema: totalDistractionTime: joi.number().positive().min(1).required()
+        // So it MUST be >= 1 ?? "positive" usually means > 0. "min(1)" means >= 1.
+        // Let's assume min(0) passed in my reading, but waiting... 
+        // File view said: totalDistractionTime: joi.number().positive().min(1).required().
+        // So we MUST send at least 1.
+
+        const finalDistractionTime = Math.max(1, Number(totalDistractionTimeMinutes.toFixed(2)))
+        const estimatedMinutes = Math.round(totalTimeTarget / 60)
+
+        // Productive Time = Estimated - Distractions
+        // Ensure not negative.
+        const productiveMinutes = Math.max(0, estimatedMinutes - totalDistractionTimeMinutes)
 
         try {
             await api.createDeepWork(habitId, {
                 startTime: startTime.toISOString(),
                 endTime: endTime.toISOString(),
-                estimatedTime: Math.round(totalTimeTarget / 60),
+                estimatedTime: estimatedMinutes,
                 cancelled: false,
                 reasonCancelled: null,
                 difficulty: difficulty,
-                productiveTime: Math.round(workTimeRef.current / 60),
+                productiveTime: Number(productiveMinutes.toFixed(2)),
                 distractions: {
                     apps: appsData,
-                    totalDistractionTime: finalTotalTime,
+                    totalDistractionTime: finalDistractionTime,
                     totalSwitches: totalSwitches
                 }
             })
 
-            await api.updateHabitStatus(habitId, 'completed', difficulty)
+            await api.updateHabitStatus(habitId, 'completed', difficulty) // Pass difficulty if needed? Check signature.
             alert(`¡Hábito "${habitTitle}" completado exitosamente!`)
         } catch (error: any) {
             console.error('Failed to save deep work or complete habit', error)
@@ -408,6 +467,11 @@ export default function FocusTimer(): React.JSX.Element {
                 isOpen={showDifficultyModal}
                 onClose={() => setShowDifficultyModal(false)}
                 onConfirm={handleDifficultyConfirm}
+            />
+
+            <AllowedAppsModal
+                isOpen={showAllowedAppsModal}
+                onConfirm={handleAllowedAppsConfirm}
             />
         </div>
     )

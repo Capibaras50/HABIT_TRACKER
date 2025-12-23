@@ -119,4 +119,9 @@ export class ActivityTracker {
         })
         return usage.sort((a, b) => b.timeSpentSeconds - a.timeSpentSeconds)
     }
+
+    public resetStats() {
+        this.stats.clear()
+        this.lastAppName = null
+    }
 }
